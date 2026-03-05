@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-get-image-local",
-  "description": "从本地精准调用图片，可指定群聊权限，协调指令管理",
-  "version": "1.0.2",
+  "description": "📷 本地图片精准调用插件 | 支持多指令、子文件夹、灵活权限配置、超级管理员",
+  "version": "1.0.3",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -15,12 +15,13 @@
     "image",
     "local",
     "picture",
-    "权限管理"
+    "权限管理",
+    "superuser"
   ],
   "koishi": {
     "description": {
-      "zh": "📸 从本地文件夹按编号精准调用图片，支持多指令、子文件夹递归查找、群聊私聊权限独立控制。适合表情包、题库图片等场景。",
-      "en": "📸 Precisely call local images by number, supports multiple commands, subfolder recursion, and independent permission control for groups and private chats. Ideal for memes, image databases, etc."
+      "zh": "📸 从本地文件夹按编号精准调用图片，支持多指令、子文件夹递归查找、群聊私聊权限独立控制，新增超级管理员功能。适合表情包、题库图片等场景。",
+      "en": "📸 Precisely call local images by number, supports multiple commands, subfolder recursion, independent permission control for groups and private chats, with superuser support."
     },
     "service": {
       "required": [],

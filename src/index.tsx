@@ -5,9 +5,8 @@ import { Dirent } from "fs";
 
 export const name = "get-image-local";
 
-// 每个指令的配置项
-export interface CommandItem {
-  name: string; // 指令名称
+// 每个指令的配置项（不包含指令名，指令名作为键）
+export interface CommandConfig {
   path: string; // 图片根路径
   guilds?: string[]; // 允许的群ID列表
   private?: boolean; // 私聊权限（覆盖默认）
@@ -16,10 +15,10 @@ export interface CommandItem {
 export interface Config {
   defaultPrivate: boolean; // 默认私聊权限
   defaultEnable: boolean; // 默认群聊权限（当指令未指定 guilds 时）
-  commands: CommandItem[]; // 指令列表
+  superUsers: string[]; // 超级管理员用户ID，可无视群聊限制
+  commands: Record<string, CommandConfig>; // 指令名 => 配置
 }
 
-// 使用 intersect 分组配置，并添加说明文字
 export const Config: Schema<Config> = Schema.intersect([
   // 全局设置卡片
   Schema.object({
@@ -29,27 +28,29 @@ export const Config: Schema<Config> = Schema.intersect([
     defaultEnable: Schema.boolean()
       .description("默认群聊权限（当指令未指定群白名单时）")
       .default(true),
-  }).description("⚙️ 全局设置\n\n• 此处配置默认权限，每个指令可单独覆盖。"),
+    superUsers: Schema.array(String)
+      .description("👑 超级管理员QQ号（可无视群聊/私聊限制，任意调用）")
+      .role("table")
+      .default([]),
+  }).description(
+    "⚙️ 全局设置\n\n• 此处配置默认权限和超级管理员，每个指令可单独覆盖。",
+  ),
 
-  // 指令列表卡片（表格形式）
+  // 指令列表卡片（字典形式，键为指令名，值为配置，每个卡片默认折叠）
   Schema.object({
-    commands: Schema.array(
+    commands: Schema.dict(
       Schema.object({
-        name: Schema.string()
-          .description("📛 指令名称（例如“图片”）")
-          .required()
-          .role("input"), // 优化输入框样式
         path: Schema.string()
           .description("📁 图片存放根目录（支持子文件夹）")
           .required()
-          .role("textarea"), // 长路径可用多行
+          .role("textarea"),
         guilds: Schema.array(String)
           .description("👥 允许的群ID列表（留空则使用默认规则）")
           .role("table"),
         private: Schema.boolean()
           .description("💬 是否允许私聊（不填则使用全局默认）")
           .default(undefined),
-      }),
+      }).collapse(true), // 每个指令卡片默认折叠，键名作为折叠标题
     ).description("📋 指令列表（可增删）\n\n每个指令可独立配置路径和权限。"),
   }),
 ]);
@@ -90,51 +91,52 @@ async function findImage(dir: string, number: string): Promise<string | null> {
 }
 
 /**
- * 权限检查
+ * 权限检查（支持超级管理员）
  * @param session 会话对象
- * @param cmd 指令配置
- * @param defaultPrivate 默认私聊权限
- * @param defaultEnable 默认群聊权限
+ * @param cmdConfig 指令配置
+ * @param config 完整配置
  * @returns 是否有权限响应
  */
 function checkPermission(
   session: any,
-  cmd: CommandItem,
-  defaultPrivate: boolean,
-  defaultEnable: boolean,
+  cmdConfig: CommandConfig,
+  config: Config,
 ): boolean {
+  // 超级管理员：无视一切限制
+  if (config.superUsers?.includes(session.userId)) {
+    return true;
+  }
+
   const isPrivate = !session.guildId;
   if (isPrivate) {
-    // 私聊权限：优先使用指令的 private，否则使用默认
+    // 私聊权限
     const allowPrivate =
-      cmd.private !== undefined ? cmd.private : defaultPrivate;
+      cmdConfig.private !== undefined
+        ? cmdConfig.private
+        : config.defaultPrivate;
     return allowPrivate;
   } else {
-    // 群聊权限：若指定了 guilds，则仅允许列表中的群；否则使用默认规则
-    if (cmd.guilds) {
-      return cmd.guilds.includes(session.guildId);
+    // 群聊权限
+    if (cmdConfig.guilds) {
+      return cmdConfig.guilds.includes(session.guildId);
     } else {
-      return defaultEnable;
+      return config.defaultEnable;
     }
   }
 }
 
 export function apply(ctx: Context, config: Config) {
-  const {
-    defaultPrivate = false,
-    defaultEnable = true,
-    commands = [],
-  } = config;
+  const { commands = {} } = config;
 
-  // 遍历指令数组，为每个指令注册处理函数
-  for (const cmd of commands) {
-    if (!cmd.name || !cmd.path) continue; // 指令名和路径必须存在
+  // 为每个配置的指令注册处理函数
+  for (const [cmdName, cmdConfig] of Object.entries(commands)) {
+    if (!cmdName || !cmdConfig.path) continue; // 指令名和路径必须存在
 
     ctx
-      .command(`${cmd.name} <number:string>`)
+      .command(`${cmdName} <number:string>`)
       .action(async ({ session }, number) => {
         // 权限检查：无权限时直接返回（不响应）
-        if (!checkPermission(session, cmd, defaultPrivate, defaultEnable)) {
+        if (!checkPermission(session, cmdConfig, config)) {
           return;
         }
 
@@ -143,14 +145,14 @@ export function apply(ctx: Context, config: Config) {
           return "编号必须为数字。";
         }
 
-        const basePath = path.resolve(cmd.path);
+        const basePath = path.resolve(cmdConfig.path);
         const imagePath = await findImage(basePath, number);
 
         if (!imagePath) {
           return `找不到编号为 ${number} 的图片。`;
         }
 
-        // 使用 h 函数发送图片（避免 JSX 运行时问题）
+        // 使用 h 函数发送图片
         await session.send(h("image", { url: `file://${imagePath}` }));
       });
   }
