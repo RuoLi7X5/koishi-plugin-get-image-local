@@ -32,6 +32,12 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.intersect([
+   // --- 新增：仓库链接卡片 ---
+  Schema.object({
+   _repoLink: Schema.any()
+      .role('repo-link')   // 使用我们注册的类型
+      .description(''),    // 可留空
+  }).description(''),      // 卡片标题可留空
   // 全局设置卡片
   Schema.object({
     defaultPrivate: Schema.boolean()
