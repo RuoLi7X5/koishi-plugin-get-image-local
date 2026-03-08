@@ -1,37 +1,46 @@
 {
   "name": "koishi-plugin-get-image-local",
-  "description": "📷 本地图片精准调用插件 | 支持多指令、子文件夹、灵活权限配置、超级管理员",
-  "version": "1.0.3",
-  "main": "lib/index.js",
-  "typings": "lib/index.d.ts",
-  "files": [
-    "lib",
-    "dist"
-  ],
-  "license": "MIT",
+  "version": "1.0.4",
+  "description": "📷 本地图片精准调用 | 缓存加速、权限组、范围查询、调试日志、控制台日志显示",
   "keywords": [
     "koishi",
     "plugin",
     "image",
     "local",
     "picture",
-    "权限管理",
-    "superuser"
+    "缓存",
+    "权限组",
+    "范围查询",
+    "调试日志",
+    "控制台日志",
+    "本地图片",
+    "精准调用"
+  
+  ],
+  "main": "lib/index.js",
+  "typings": "lib/index.d.ts",
+  "files": [
+    "lib",
+    "dist"
   ],
   "koishi": {
     "description": {
-      "zh": "📸 从本地文件夹按编号精准调用图片，支持多指令、子文件夹递归查找、群聊私聊权限独立控制，新增超级管理员功能。适合表情包、题库图片等场景。",
-      "en": "📸 Precisely call local images by number, supports multiple commands, subfolder recursion, independent permission control for groups and private chats, with superuser support."
+      "zh": "📸 从本地文件夹按编号精准调用图片，支持多指令、子文件夹递归查找、缓存加速、权限组、范围查询、调试日志。内置控制台日志查看页面。",
+      "en": "📸 Precisely call local images by number, supports multiple commands, subfolder recursion, cache acceleration, permission groups, range query, debug logs. Built-in console log viewer."
     },
     "service": {
-      "required": [],
+      "required": [
+        "console"
+      ],
       "optional": []
     }
   },
   "peerDependencies": {
-    "koishi": "^4.18.7"
+    "@koishijs/plugin-console": "^5.30.11",
+    "koishi": "^4.18.0"
   },
   "devDependencies": {
-    "@types/node": "^25.3.3"
+    "@koishijs/client": "^5.30.11",
+    "vue": "^3.5.29"
   }
 }

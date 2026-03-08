@@ -2,7 +2,8 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "lib",
-    "target": "es2022",
+    "strict": true,
+    "target": "esnext",
     "module": "esnext",
     "declaration": true,
     "emitDeclarationOnly": true,
@@ -10,9 +11,9 @@
     "incremental": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "moduleResolution": "bundler",
+    "moduleResolution": "node",
     "jsx": "react-jsx",
-    "jsxImportSource": "koishi",
+    "jsxImportSource": "vue",
     "types": ["node", "yml-register/types"]
   },
   "include": ["src"]

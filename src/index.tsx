@@ -1,21 +1,33 @@
-import { Context, Schema, h } from "koishi";
+import { Context, Schema, h, Logger } from "koishi";
 import path from "path";
 import fs from "fs/promises";
 import { Dirent } from "fs";
 
 export const name = "get-image-local";
+const logger = new Logger(name);
+
+// 权限组定义
+export interface GroupConfig {
+  [groupName: string]: string[];
+}
 
 // 每个指令的配置项（不包含指令名，指令名作为键）
 export interface CommandConfig {
-  path: string; // 图片根路径
-  guilds?: string[]; // 允许的群ID列表
-  private?: boolean; // 私聊权限（覆盖默认）
+  path: string;
+  guilds?: string[]; // 直接指定的群ID
+  group?: string; // 引用的权限组名
+  private?: boolean; // 私聊权限（覆盖默认），不填则使用全局默认
 }
 
 export interface Config {
-  defaultPrivate: boolean; // 默认私聊权限
-  defaultEnable: boolean; // 默认群聊权限（当指令未指定 guilds 时）
-  superUsers: string[]; // 超级管理员用户ID，可无视群聊限制
+  defaultPrivate: boolean;
+  defaultEnable: boolean;
+  superUsers: string[];
+  enableCache: boolean; // 是否启用缓存
+  enableDebug: boolean; // 是否输出调试日志
+  maxRange: number; // 最大连续张数
+  enableNoPermissionMessage: boolean; // 无权限时是否发送提示
+  groups: Record<string, string[]>; // 权限组
   commands: Record<string, CommandConfig>; // 指令名 => 配置
 }
 
@@ -32,11 +44,28 @@ export const Config: Schema<Config> = Schema.intersect([
       .description("👑 超级管理员QQ号（可无视群聊/私聊限制，任意调用）")
       .role("table")
       .default([]),
+    enableCache: Schema.boolean()
+      .description("🚀 启用图片缓存（启动时扫描所有图片，大幅提升响应速度）")
+      .default(true),
+    enableDebug: Schema.boolean()
+      .description("🐛 输出调试日志（可在控制台查看详细调用信息）")
+      .default(false),
+    maxRange: Schema.number()
+      .description("📎 范围查询最大连续张数（如 1-10，不得超过此值）")
+      .default(10)
+      .min(1)
+      .max(50),
+    enableNoPermissionMessage: Schema.boolean()
+      .description("🔇 无权限时是否发送提示消息（关闭则完全静默）")
+      .default(true),
+    groups: Schema.dict(Schema.array(String))
+      .description("👥 权限组定义（组名 => 群ID列表）")
+      .role("table"),
   }).description(
-    "⚙️ 全局设置\n\n• 此处配置默认权限和超级管理员，每个指令可单独覆盖。",
+    "⚙️ 全局设置\n\n• 配置默认权限、超级管理员、缓存、调试等全局选项。",
   ),
 
-  // 指令列表卡片（字典形式，键为指令名，值为配置，每个卡片默认折叠）
+  // 指令列表卡片（字典形式，键为指令名，值包含配置，每个卡片默认折叠，键名作为折叠标题）
   Schema.object({
     commands: Schema.dict(
       Schema.object({
@@ -47,22 +76,182 @@ export const Config: Schema<Config> = Schema.intersect([
         guilds: Schema.array(String)
           .description("👥 允许的群ID列表（留空则使用默认规则）")
           .role("table"),
-        private: Schema.boolean()
-          .description("💬 是否允许私聊（不填则使用全局默认）")
-          .default(undefined),
+        group: Schema.string()
+          .description("🔗 引用权限组名（需在全局 groups 中定义）")
+          .role("input"),
+        private: Schema.boolean().description(
+          "💬 是否允许私聊（不填则使用全局默认）",
+        ),
+        // 注意：不设置 .default(undefined)，Schema.boolean() 默认即为 undefined
       }).collapse(true), // 每个指令卡片默认折叠，键名作为折叠标题
-    ).description("📋 指令列表（可增删）\n\n每个指令可独立配置路径和权限。"),
+    ).description("📋 指令列表（可增删，按添加顺序排列）"),
   }),
 ]);
 
 // 支持的图片扩展名
 const IMAGE_EXTS = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"];
 
+// 缓存结构：指令名 -> 编号 -> 绝对路径
+type CacheMap = Map<string, Map<string, string>>;
+
+// 模块级变量，供内部函数使用
+let commandConfigs: Record<string, CommandConfig> = {};
+let cache: CacheMap = new Map();
+
 /**
- * 递归查找与编号完全匹配的图片文件
+ * 递归扫描目录，构建编号到文件路径的映射
  * @param dir 当前目录
- * @param number 数字字符串（如 "001"）
- * @returns 文件绝对路径，或 null
+ * @param baseDir 根目录（用于日志）
+ * @param map 映射表
+ * @param debug 是否输出调试日志（可能为 undefined，内部使用默认值）
+ */
+async function scanDirectory(
+  dir: string,
+  baseDir: string,
+  map: Map<string, string>,
+  debug: boolean = false,
+) {
+  // 确保 debug 为布尔值（处理传入 undefined 的情况）
+  const shouldDebug = debug ?? false;
+
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    if (shouldDebug) logger.warn(`无法读取目录 ${dir}: ${err}`);
+    return;
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await scanDirectory(fullPath, baseDir, map, shouldDebug);
+    } else if (entry.isFile()) {
+      const ext = path.extname(entry.name).toLowerCase();
+      if (IMAGE_EXTS.includes(ext)) {
+        const basename = path.basename(entry.name, ext);
+        if (map.has(basename)) {
+          if (shouldDebug)
+            logger.warn(
+              `编号 ${basename} 重复：${fullPath} 与 ${map.get(basename)}，将使用先扫描到的`,
+            );
+        } else {
+          map.set(basename, fullPath);
+          if (shouldDebug) logger.debug(`缓存图片：${basename} -> ${fullPath}`);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * 构建缓存
+ */
+async function buildCache(
+  commands: Record<string, CommandConfig>,
+  enableDebug: boolean,
+): Promise<CacheMap> {
+  const cache: CacheMap = new Map();
+  for (const [cmdName, cmdConfig] of Object.entries(commands)) {
+    if (!cmdConfig.path) continue;
+    const cmdCache = new Map<string, string>();
+    cache.set(cmdName, cmdCache);
+    try {
+      const basePath = path.resolve(cmdConfig.path);
+      if (enableDebug) logger.info(`开始扫描指令 ${cmdName} 路径：${basePath}`);
+      await scanDirectory(basePath, basePath, cmdCache, enableDebug);
+      if (enableDebug)
+        logger.info(`指令 ${cmdName} 扫描完成，共 ${cmdCache.size} 张图片`);
+    } catch (err) {
+      logger.error(`扫描指令 ${cmdName} 失败：${err}`);
+    }
+  }
+  return cache;
+}
+
+/**
+ * 从缓存获取图片路径，若文件不存在则尝试重新扫描一次
+ */
+async function getImagePath(
+  cmdName: string,
+  number: string,
+  cache: CacheMap,
+  enableDebug: boolean,
+): Promise<string | null> {
+  const cmdCache = cache.get(cmdName);
+  if (!cmdCache) return null;
+
+  let imagePath = cmdCache.get(number);
+  if (!imagePath) return null;
+
+  // 验证文件是否仍存在
+  try {
+    await fs.access(imagePath);
+    return imagePath;
+  } catch {
+    // 文件已不存在，从缓存删除并尝试重新扫描该指令的路径
+    if (enableDebug)
+      logger.warn(`缓存图片 ${number} 已不存在，尝试重新扫描指令 ${cmdName}`);
+    cmdCache.delete(number);
+
+    // 从 commandConfigs 中找到对应指令的配置
+    const cmdConfig = commandConfigs[cmdName];
+    if (cmdConfig) {
+      const basePath = path.resolve(cmdConfig.path);
+      const newMap = new Map<string, string>();
+      await scanDirectory(basePath, basePath, newMap, enableDebug);
+      // 合并新扫描结果
+      for (const [k, v] of newMap) {
+        cmdCache.set(k, v);
+      }
+      return cmdCache.get(number) || null;
+    }
+    return null;
+  }
+}
+
+/**
+ * 解析参数：支持纯数字或范围（如 1-10）
+ * 返回编号字符串数组，若格式错误返回 null
+ */
+function parseNumberParam(param: string, maxRange: number): string[] | null {
+  if (/^\d+$/.test(param)) {
+    return [param];
+  }
+  const match = param.match(/^(\d+)-(\d+)$/);
+  if (match) {
+    const start = parseInt(match[1], 10);
+    const end = parseInt(match[2], 10);
+    if (start <= end && end - start + 1 <= maxRange) {
+      const result: string[] = [];
+      for (let i = start; i <= end; i++) {
+        result.push(i.toString());
+      }
+      return result;
+    }
+  }
+  return null;
+}
+
+/**
+ * 获取指令允许的群ID列表（合并 guilds 和 group）
+ */
+function getAllowedGuilds(
+  cmd: CommandConfig,
+  groups: Record<string, string[]>,
+): string[] {
+  const allowed = new Set<string>();
+  if (cmd.guilds) {
+    cmd.guilds.forEach((id) => allowed.add(id));
+  }
+  if (cmd.group && groups[cmd.group]) {
+    groups[cmd.group].forEach((id) => allowed.add(id));
+  }
+  return Array.from(allowed);
+}
+
+/**
+ * 非缓存模式下的查找（递归扫描）
  */
 async function findImage(dir: string, number: string): Promise<string | null> {
   let entries: Dirent[];
@@ -80,7 +269,7 @@ async function findImage(dir: string, number: string): Promise<string | null> {
     } else if (entry.isFile()) {
       const ext = path.extname(entry.name).toLowerCase();
       if (IMAGE_EXTS.includes(ext)) {
-        const basename = path.basename(entry.name, ext); // 去掉扩展名
+        const basename = path.basename(entry.name, ext);
         if (basename === number) {
           return fullPath;
         }
@@ -92,16 +281,15 @@ async function findImage(dir: string, number: string): Promise<string | null> {
 
 /**
  * 权限检查（支持超级管理员）
- * @param session 会话对象
- * @param cmdConfig 指令配置
- * @param config 完整配置
- * @returns 是否有权限响应
  */
 function checkPermission(
   session: any,
-  cmdConfig: CommandConfig,
+  cmd: CommandConfig,
   config: Config,
 ): boolean {
+  // 确保 session 存在
+  if (!session) return false;
+
   // 超级管理员：无视一切限制
   if (config.superUsers?.includes(session.userId)) {
     return true;
@@ -109,16 +297,13 @@ function checkPermission(
 
   const isPrivate = !session.guildId;
   if (isPrivate) {
-    // 私聊权限
     const allowPrivate =
-      cmdConfig.private !== undefined
-        ? cmdConfig.private
-        : config.defaultPrivate;
+      cmd.private !== undefined ? cmd.private : config.defaultPrivate;
     return allowPrivate;
   } else {
-    // 群聊权限
-    if (cmdConfig.guilds) {
-      return cmdConfig.guilds.includes(session.guildId);
+    const allowedGuilds = getAllowedGuilds(cmd, config.groups || {});
+    if (allowedGuilds.length > 0) {
+      return allowedGuilds.includes(session.guildId);
     } else {
       return config.defaultEnable;
     }
@@ -126,34 +311,102 @@ function checkPermission(
 }
 
 export function apply(ctx: Context, config: Config) {
-  const { commands = {} } = config;
+  const {
+    defaultPrivate = false,
+    defaultEnable = true,
+    superUsers = [],
+    enableCache = true,
+    enableDebug = false,
+    maxRange = 10,
+    enableNoPermissionMessage = true,
+    groups = {},
+    commands = {},
+  } = config;
 
-  // 为每个配置的指令注册处理函数
-  for (const [cmdName, cmdConfig] of Object.entries(commands)) {
-    if (!cmdName || !cmdConfig.path) continue; // 指令名和路径必须存在
+  commandConfigs = commands; // 保存到全局变量
+
+  // 如果启用缓存，立即构建
+  if (enableCache) {
+    buildCache(commandConfigs, enableDebug)
+      .then((c) => {
+        cache = c;
+        if (enableDebug) logger.success("缓存构建完成");
+      })
+      .catch((err) => {
+        logger.error("缓存构建失败", err);
+      });
+  }
+
+  // 为每个指令注册处理函数
+  for (const [cmdName, cmdConfig] of Object.entries(commandConfigs)) {
+    if (!cmdName || !cmdConfig.path) continue;
 
     ctx
       .command(`${cmdName} <number:string>`)
       .action(async ({ session }, number) => {
-        // 权限检查：无权限时直接返回（不响应）
+        // 确保 session 存在
+        if (!session) return;
+
+        // 权限检查
         if (!checkPermission(session, cmdConfig, config)) {
+          if (enableNoPermissionMessage) {
+            return "暂时未获得该指令的权限，请联系管理员";
+          }
           return;
         }
 
-        // 参数校验：必须为纯数字（允许前导零）
-        if (!/^\d+$/.test(number)) {
-          return "编号必须为数字。";
+        // 参数解析
+        const numbers = parseNumberParam(number, maxRange);
+        if (!numbers) {
+          return (
+            "编号格式错误，应为纯数字或范围（如 1-10），且范围长度不超过 " +
+            maxRange
+          );
         }
 
-        const basePath = path.resolve(cmdConfig.path);
-        const imagePath = await findImage(basePath, number);
-
-        if (!imagePath) {
-          return `找不到编号为 ${number} 的图片。`;
+        // 获取图片路径
+        const imagePaths: string[] = [];
+        const missing: string[] = [];
+        for (const n of numbers) {
+          let imagePath: string | null = null;
+          if (enableCache) {
+            imagePath = await getImagePath(cmdName, n, cache, enableDebug);
+          } else {
+            // 无缓存时直接查找
+            const basePath = path.resolve(cmdConfig.path);
+            imagePath = await findImage(basePath, n);
+          }
+          if (imagePath) {
+            imagePaths.push(imagePath);
+          } else {
+            missing.push(n);
+          }
         }
 
-        // 使用 h 函数发送图片
-        await session.send(h("image", { url: `file://${imagePath}` }));
+        // 处理结果
+        if (imagePaths.length === 0) {
+          return "小仙没找到呢，检查一下命令输入吧";
+        }
+
+        // 如果启用了调试，记录调用信息
+        if (enableDebug) {
+          logger.debug(
+            `用户 ${session.userId} 在 ${session.guildId || "私聊"} 调用 ${cmdName} ${number}，找到 ${imagePaths.length} 张，缺失 ${missing.join(",") || "无"}`,
+          );
+        }
+
+        // 发送图片（合并成一条消息发送多个图片元素）
+        const elements = imagePaths.map((p) =>
+          h("image", { url: `file://${p}` }),
+        );
+        await session.send(
+          elements.length === 1 ? elements[0] : h("message", ...elements),
+        );
+
+        // 如果有缺失的编号且范围查询时，补充提示
+        if (missing.length > 0 && numbers.length > 1) {
+          await session.send(`以下编号未找到：${missing.join("、")}`);
+        }
       });
   }
 }
