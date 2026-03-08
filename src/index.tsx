@@ -32,12 +32,16 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.intersect([
-   // --- 新增：仓库链接卡片 ---
-  Schema.object({
-   _repoLink: Schema.any()
-      .role('repo-link')   // 使用我们注册的类型
-      .description(''),    // 可留空
-  }).description(''),      // 卡片标题可留空
+  // --- 新增：仓库链接卡片 ---
+  Schema.union([
+    Schema.object({
+      repoLink: Schema.const(
+        "https://github.com/RuoLi7X5/koishi-plugin-get-image-local",
+      )
+        .description("📦 点击下方链接访问仓库")
+        .role("link"), // role='link' 会让它显示为链接
+    }),
+  ]),
   // 全局设置卡片
   Schema.object({
     defaultPrivate: Schema.boolean()
@@ -67,9 +71,7 @@ export const Config: Schema<Config> = Schema.intersect([
     groups: Schema.dict(Schema.array(String))
       .description("👥 权限组定义（组名 => 群ID列表）")
       .role("table"),
-  }).description(
-    "⚙️ 全局设置\n\n• 配置默认权限、超级管理员、缓存、调试等全局选项。",
-  ),
+  }).description("⚙️ 全局设置 | "),
 
   // 指令列表卡片（字典形式，键为指令名，值包含配置，每个卡片默认折叠，键名作为折叠标题）
   Schema.object({
