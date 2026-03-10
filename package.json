@@ -3,6 +3,10 @@
   "version": "1.0.5",
   "client": "client/index.ts",
   "homepage": "https://github.com/RuoLi7X5/koishi-plugin-get-image-local",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RuoLi7X5/koishi-plugin-get-image-local.git"
+  },
   "description": "📷 本地图片精准调用 | 缓存加速、权限组、范围查询、调试日志、控制台日志显示",
   "keywords": [
     "koishi",
